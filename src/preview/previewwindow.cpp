@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 #include "preview/previewwindow.h"
-#include "preview/imagepreview.h"
 #include "views/style.h"
 
 #include "base/event_loop.h"
@@ -23,6 +22,7 @@
 #include "ui/theme.h"
 #include "ui/window.h"
 #include "ui/window_header.h"
+#include "ui/zoomable_image_view.h"
 
 #include <algorithm>
 #include <cmath>
@@ -368,7 +368,8 @@ class PreviewImagePage : public ui::View
 public:
     PreviewImagePage()
     {
-        viewer = addChild<ImagePreview>();
+        viewer = addChild<ui::ZoomableImageView>();
+        viewer->setBottomCornerRadius(ui::Theme::current().windowRadius);
         busy = addChild<ui::BusyIndicator>();
         busy->setVisible(false);
         failed = addChild<ui::Label>(tr("This image could not be displayed."));
@@ -384,11 +385,12 @@ public:
 
     void setImage(const PreviewFile& file, ui::SizeF prepared, double ratio)
     {
-        viewer->setImage(file, prepared, ratio);
+        const ui::ImageInfo info {true, file.width, file.height, file.animated, file.vector};
+        viewer->setImage(base::url::toLocalFile(file.url).value_or(std::string()), info, prepared, ratio);
         updateStatus();
     }
 
-    ImagePreview* viewer;
+    ui::ZoomableImageView* viewer;
     ui::BusyIndicator* busy;
     ui::Label* failed;
 
@@ -435,6 +437,7 @@ public:
         card = addChild<PreviewCard>();
         image = addChild<PreviewImagePage>();
         text = addChild<PreviewTextPage>();
+        text->setBottomCornerRadius(ui::Theme::current().windowRadius);
         text->textArea()->isWindowKey = [this](const ui::KeyEvent& event) {
             return isWindowKey(event.key, event.modifiers, m_preview->multiple());
         };
@@ -529,7 +532,7 @@ protected:
         if (m_preview->keyPressed(event.key, event.modifiers, event.repeat))
             return true;
         if (image->isVisible() && (event.modifiers & ui::ControlModifier)) {
-            ImagePreview* viewer = image->viewer;
+            ui::ZoomableImageView* viewer = image->viewer;
             const ui::PointF center = viewer->center();
             if (event.key == ui::key::letter('=') || event.key == ui::key::letter('+')) {
                 viewer->zoomBy(1.5, center, true);
@@ -722,7 +725,7 @@ void PreviewWindow::present(PreviewFile file)
 void PreviewWindow::open()
 {
     m_window = std::make_unique<ui::Window>();
-    // Floats above applications, and leaves the source application's menu in the status bar.
+    // Floats above applications, and leaves the source application's menu in the menu bar.
     m_window->setSkipTaskbar(true);
     m_window->setAlwaysOnTop(true);
     m_window->setResizeAroundCenter(true);

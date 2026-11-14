@@ -4,7 +4,6 @@
 #include "views/colors.h"
 #include "views/folderwindow.h"
 #include "core/preferences.h"
-#include "core/shortcutconvention.h"
 #include "views/folderview.h"
 #include "dialogs/archivepasswordprompt.h"
 #include "views/foldermenu.h"
@@ -24,6 +23,8 @@
 #include "ui/label.h"
 #include "ui/menu.h"
 #include "ui/painter.h"
+#include "ui/shortcut_convention.h"
+#include "ui/sidebar_divider.h"
 #include "ui/cell_layout.h"
 #include "ui/theme.h"
 #include "ui/toast.h"
@@ -303,64 +304,6 @@ protected:
     }
 };
 
-// The sidebar's edge, which resizes it; a double click puts it back to the
-// default width.
-class SidebarDivider : public ui::View
-{
-public:
-    static constexpr double kWidth = 9;
-
-    // The width being dragged to, and when the drag ends, the width kept.
-    std::function<void(double width)> onResized;
-    std::function<void(double width)> onFinished;
-    double width = SideBar::kDefaultWidth;
-
-    bool acceptsPointer() const override { return true; }
-    ui::CursorShape cursorShape() const override { return ui::CursorShape::ResizeHorizontal; }
-
-protected:
-    void pointerPress(const ui::PointerEvent& event) override
-    {
-        if (event.button != ui::MouseButton::Left)
-            return;
-        if (event.clickCount == 2) {
-            m_dragging = false;
-            if (onFinished)
-                onFinished(SideBar::kDefaultWidth);
-            return;
-        }
-        m_dragging = true;
-        m_startWidth = width;
-        m_startX = mapToWindow(event.position).x;
-    }
-
-    void pointerMove(const ui::PointerEvent& event) override
-    {
-        if (!m_dragging || !onResized)
-            return;
-        onResized(clamped(m_startWidth + mapToWindow(event.position).x - m_startX));
-    }
-
-    void pointerRelease(const ui::PointerEvent& event) override
-    {
-        if (!m_dragging)
-            return;
-        m_dragging = false;
-        if (onFinished)
-            onFinished(clamped(m_startWidth + mapToWindow(event.position).x - m_startX));
-    }
-
-private:
-    static double clamped(double width)
-    {
-        return std::clamp(std::round(width), SideBar::kMinimumWidth, SideBar::kMaximumWidth);
-    }
-
-    bool m_dragging = false;
-    double m_startWidth = 0;
-    double m_startX = 0;
-};
-
 class FolderWindowRoot : public ui::View
 {
 public:
@@ -383,7 +326,8 @@ public:
         header = addChild<ui::WindowHeader>(FolderWindow::kHeaderInset);
         row = header->setContent<HeaderRow>();
         header->setContentUnderButtons(true);
-        divider = addChild<SidebarDivider>();
+        divider = addChild<ui::SidebarDivider>(SideBar::kMinimumWidth, SideBar::kMaximumWidth,
+                                               SideBar::kDefaultWidth);
         divider->setName("sidebarDivider");
         sidebarWidth = std::clamp(Preferences::instance().sidebarWidth(), SideBar::kMinimumWidth,
                                   SideBar::kMaximumWidth);
@@ -399,7 +343,7 @@ public:
     }
 
     SideBar* sidebar;
-    SidebarDivider* divider;
+    ui::SidebarDivider* divider;
     double sidebarWidth;
     ui::View* pages;
     ui::WindowTabBar* tabBar;
@@ -430,9 +374,8 @@ protected:
         sidebar->setGeometry({0, 0, left, height});
         row->sidebarWidth = left;
         row->requestLayout();
-        divider->width = left;
-        divider->setGeometry({left - SidebarDivider::kWidth / 2, FolderWindow::kHeaderInset, SidebarDivider::kWidth,
-                              std::max(0.0, height - FolderWindow::kHeaderInset)});
+        divider->setSidebarWidth(left);
+        divider->setGeometry({left - ui::SidebarDivider::kWidth / 2, 0, ui::SidebarDivider::kWidth, height});
         const ui::RectF content {left, 0, std::max(0.0, width - left), height};
         pages->setGeometry(content);
         for (const auto& page : pages->children())
@@ -1002,7 +945,7 @@ void FolderWindow::showAbout()
 void FolderWindow::buildMainMenu()
 {
     // Starts reading the shortcut convention, which some rows' keys follow.
-    shortcuts::commandKeys();
+    ui::commandKeys();
     m_window->setMainMenu(nullptr);
     m_mainMenu = std::make_unique<ui::Menu>();
     const uint32_t control = ui::ControlModifier;
@@ -1088,7 +1031,7 @@ void FolderWindow::buildMainMenu()
     file->onAboutToShow = [prepare, file, properties, trash] {
         prepare();
         // The folder's keys differ between the two shortcut conventions.
-        if (shortcuts::commandKeys()) {
+        if (ui::commandKeys()) {
             file->setItemKeyEquivalent(properties, "i", ui::ControlModifier);
             file->setItemKeyEquivalent(trash, "BackSpace", ui::ControlModifier);
         } else {
@@ -1128,7 +1071,7 @@ void FolderWindow::buildMainMenu()
         const Preferences& preferences = Preferences::instance();
         view->setItemChecked(icons, preferences.viewMethod() == Preferences::Grid);
         view->setItemChecked(list, preferences.viewMethod() == Preferences::List);
-        if (shortcuts::commandKeys())
+        if (ui::commandKeys())
             view->setItemKeyEquivalent(hidden, ".", ui::ControlModifier | ui::ShiftModifier);
         else
             view->setItemKeyEquivalent(hidden, "h", ui::ControlModifier);
@@ -1171,7 +1114,7 @@ void FolderWindow::buildMainMenu()
         FolderPage* page = currentPage();
         go->setItemEnabled(back, page && page->model().canGoBack());
         go->setItemEnabled(forward, page && page->model().canGoForward());
-        const bool command = shortcuts::commandKeys();
+        const bool command = ui::commandKeys();
         go->setItemKeyEquivalent(back, command ? "[" : "Left", command ? ui::ControlModifier : alt);
         go->setItemKeyEquivalent(forward, command ? "]" : "Right", command ? ui::ControlModifier : alt);
         go->setItemKeyEquivalent(enclosing, "Up", command ? ui::ControlModifier : alt);

@@ -4,7 +4,6 @@
 #include "views/folderpage.h"
 #include "views/previewclient.h"
 #include "core/preferences.h"
-#include "core/shortcutconvention.h"
 #include "model/foldermodel.h"
 #include "views/gridview.h"
 #include "views/listview.h"
@@ -18,6 +17,7 @@
 #include "ui/keys.h"
 #include "ui/label.h"
 #include "ui/painter.h"
+#include "ui/shortcut_convention.h"
 #include "ui/cell_layout.h"
 #include "ui/theme.h"
 
@@ -95,6 +95,8 @@ FolderPage::FolderPage(FolderModelHost* host, const Start& start)
         m_model->restoreHistory(start.back, start.forward);
     if (!start.selection.empty())
         m_model->selectUrlsWhenListed(start.selection);
+    if (!start.extract.empty())
+        m_model->extractArchive(start.extract);
     applySort();
 }
 
@@ -204,6 +206,7 @@ void FolderPage::createView()
         view = addChild<FolderListView>(*m_model);
     else
         view = addChild<FolderGridView>(*m_model);
+    view->setBottomCornerRadius(ui::Theme::current().windowRadius);
     m_view = view;
     m_preview->attach(m_model.get(), view);
     view->onContextMenu = [this](ui::PointF position) {
@@ -321,7 +324,7 @@ bool FolderPage::handleKey(const ui::KeyEvent& event)
         return true;
     }
 
-    if (shortcuts::commandKeys()) {
+    if (ui::commandKeys()) {
         // Command reaches us as Ctrl; outside text fields these go to the file view.
         if (modifiers == ui::ControlModifier) {
             switch (key) {
