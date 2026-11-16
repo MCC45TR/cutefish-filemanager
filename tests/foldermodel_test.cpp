@@ -6,6 +6,7 @@
 
 #include "core/preferences.h"
 #include "model/foldermodel.h"
+#include "model/foldersizecache.h"
 #include "ops/operations.h"
 
 #include "base/dbus.h"
@@ -490,6 +491,35 @@ TEST(FolderModelTest, CutFollowsWhatTheMoveLeft)
     EXPECT_TRUE(daemon.waitForFinished(std::chrono::seconds(3)));
 }
 
+// A renamed file stays selected under its new name.
+TEST(FolderModelTest, RenameKeepsTheSelection)
+{
+    fm::OperationsClient::instance();
+    base::Process daemon;
+    ASSERT_TRUE(daemon.start(FILEMANAGER_DAEMON));
+    auto bus = base::dbus::Connection::open(base::dbus::Connection::Bus::Session, &loop());
+    ASSERT_TRUE(bus);
+    const base::dbus::Proxy manager(bus.get(), "org.cutefish.FileOperations", "/org/cutefish/FileOperations",
+                                    "org.cutefish.FileOperations.Manager1");
+    ASSERT_TRUE(runUntil(loop(), [&] { return manager.call("CanUndo").value<bool>().has_value(); }));
+
+    TemporaryDir directory;
+    ASSERT_TRUE(writeFile(directory.filePath("a")));
+    ASSERT_TRUE(writeFile(directory.filePath("b")));
+    FolderModel folder;
+    folder.setUrl(directory.path());
+    ASSERT_TRUE(runUntil(loop(), [&] { return ready(folder) && folder.count() == 2; }));
+
+    folder.setSelected(folder.rowForUrl(url(directory.filePath("a"))));
+    folder.rename(folder.rowForUrl(url(directory.filePath("a"))), "c");
+    ASSERT_TRUE(runUntil(loop(), [&] { return folder.rowForUrl(url(directory.filePath("c"))) >= 0; }));
+    EXPECT_EQ(folder.selectedUrls(), std::vector<std::string> {url(directory.filePath("c"))});
+    EXPECT_TRUE(folder.isSelected(folder.rowForUrl(url(directory.filePath("c")))));
+
+    daemon.terminate();
+    EXPECT_TRUE(daemon.waitForFinished(std::chrono::seconds(3)));
+}
+
 // Files dropped in from another folder are selected once they show.
 TEST(FolderModelTest, DroppedFilesAreSelected)
 {
@@ -608,4 +638,28 @@ TEST(FolderModelTest, ExtractsSplitAndEncryptedArchives)
 
     daemon.terminate();
     EXPECT_TRUE(daemon.waitForFinished(std::chrono::seconds(3)));
+}
+
+TEST(FolderSizeCacheTest, RecountKeepsTheKnownCount)
+{
+    TemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    writeFile(dir.filePath("a.txt"));
+    writeFile(dir.filePath("b.txt"));
+
+    fm::FolderSizeCache cache;
+    int announced = 0;
+    const auto subscription = cache.ready.connect([&](const std::string&) { ++announced; });
+    EXPECT_EQ(cache.count(dir.path()), -1);
+    ASSERT_TRUE(runUntil(loop(), [&] { return announced == 1; }));
+    EXPECT_EQ(cache.count(dir.path()), 2);
+
+    writeFile(dir.filePath("c.txt"));
+    cache.clear();
+    EXPECT_EQ(cache.count(dir.path()), 2);
+    ASSERT_TRUE(runUntil(loop(), [&] { return announced == 2; }));
+    EXPECT_EQ(cache.count(dir.path()), 3);
+
+    cache.reset();
+    EXPECT_EQ(cache.count(dir.path()), -1);
 }
