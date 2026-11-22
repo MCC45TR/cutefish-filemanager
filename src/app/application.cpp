@@ -8,10 +8,13 @@
 #include "desktop/desktopwindow.h"
 #include "core/launcher.h"
 #include "core/lister.h"
+#include "core/mounts.h"
+#include "core/notifications.h"
 #include "core/standardfolders.h"
 #include "model/foldermodel.h"
 #include "ops/operations.h"
 #include "preview/fontpreview.h"
+#include "views/gridview.h"
 
 #include "base/application_bundle.h"
 #include "base/application_registry.h"
@@ -24,6 +27,7 @@
 
 #include <algorithm>
 #include <map>
+#include <optional>
 #include <thread>
 
 #ifdef __GLIBC__
@@ -200,6 +204,21 @@ void Application::openFiles(const std::vector<std::string>& paths)
             openFolderWindow(start, nullptr);
             continue;
         }
+        // A disk image mounts, and its volume opens in a window of its own.
+        if (local && base::mime::typeForFile(*local) == "application/x-apple-diskimage") {
+            MountsClient::instance().requestMount(*local, {}, [this, alive = m_alive](const std::string& status,
+                                                                                const base::dbus::VariantMap& details) {
+                const auto found = details.find(status == "mounted" ? "path" : "message");
+                if (!*alive || found == details.end())
+                    return;
+                const std::string value = found->second.value<std::string>();
+                if (status == "mounted")
+                    openDiskImageWindow(value);
+                else
+                    notifications::show("cutefish-filemanager", "drive-removable-media", value, 5000);
+            });
+            continue;
+        }
         if (local && !base::bundle::bundlePath(*local).empty()
             && !base::ApplicationRegistry::instance().runsBundles() && launcher::canInstallBundleRunner()) {
             installBundleRunner(*local, nullptr);
@@ -278,6 +297,39 @@ FolderWindow* Application::openFolderWindow(const FolderPage::Start& start, ui::
     return raw;
 }
 
+void Application::openDiskImageWindow(const std::string& path)
+{
+    const std::string url = FolderModel::resolve(path);
+    const auto local = url.starts_with('/') ? std::optional<std::string>(url) : base::url::toLocalFile(url);
+    if (!local) {
+        openWindow(path);
+        return;
+    }
+    // Opened again, the image's window comes forward.
+    for (const auto& window : m_windows) {
+        const FolderPage* page = window->currentPage();
+        if (window->kind() == FolderWindow::Kind::DiskImage && page && page->currentUrl() == url) {
+            window->window().activate();
+            return;
+        }
+    }
+    if (m_diskImageReads.count(url))
+        return;
+    // Read before the window opens, so it opens at the size the image asks for.
+    m_diskImageReads[url] = base::runInThread(
+            [url, folder = *local] { return ArrangedFolder::read(url, folder); },
+            [this, url](std::shared_ptr<const ArrangedFolder> arranged) {
+                m_diskImageReads.erase(url);
+                FolderPage::Start start;
+                start.url = url;
+                start.arrangement = std::move(arranged);
+                auto window = std::make_unique<FolderWindow>(this, start, ui::SizeF {}, FolderWindow::Kind::DiskImage);
+                FolderWindow* raw = window.get();
+                m_windows.push_back(std::move(window));
+                raw->show();
+            });
+}
+
 void Application::openFolders(const std::vector<std::string>& paths)
 {
     for (const std::string& path : paths)
@@ -339,7 +391,7 @@ std::vector<std::string> Application::toUrls(const std::vector<std::string>& inp
 
 bool Application::isIdle() const
 {
-    return m_windows.empty() && m_dialogs->isEmpty() && (!m_preview || !m_preview->isVisible())
+    return m_windows.empty() && m_diskImageReads.empty() && m_dialogs->isEmpty() && (!m_preview || !m_preview->isVisible())
             && OperationsClient::instance().activeTaskCount() == 0;
 }
 

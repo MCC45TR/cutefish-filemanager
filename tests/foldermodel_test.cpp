@@ -5,7 +5,10 @@
 #include "testutil.h"
 
 #include "core/preferences.h"
+#include "core/thumbnails.h"
 #include "model/foldermodel.h"
+#include "views/gridview.h"
+#include "views/style.h"
 #include "model/foldersizecache.h"
 #include "ops/operations.h"
 
@@ -15,6 +18,7 @@
 #include "ui/application.h"
 #include "ui/clipboard.h"
 #include "ui/drag.h"
+#include "ui/window.h"
 
 #include <gtest/gtest.h>
 
@@ -72,6 +76,96 @@ TEST(FolderModelTest, NamesSortNumerically)
     std::vector<std::string> reversed(expected.rbegin(), expected.rend());
     folder.setSortDesc(true);
     EXPECT_TRUE(runUntil(loop(), [&] { return names(folder) == reversed; }));
+}
+
+// A bundle with an icon file shows it; one whose icon is only in its asset
+// catalog asks for a thumbnail.
+TEST(FolderModelTest, OnlyBundlesWithoutAnIconFileShowThumbnails)
+{
+    TemporaryDir directory;
+    ASSERT_TRUE(directory.isValid());
+    const std::string plist = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<plist version=\"1.0\"><dict>"
+                              "<key>CFBundleIconFile</key><string>AppIcon</string>"
+                              "<key>CFBundleIconName</key><string>AppIcon</string></dict></plist>\n";
+    std::filesystem::create_directories(directory.filePath("Editor.app/Contents/Resources"));
+    std::filesystem::create_directories(directory.filePath("Catalog.app/Contents"));
+    ASSERT_TRUE(writeFile(directory.filePath("Editor.app/Contents/Info.plist"), plist));
+    ASSERT_TRUE(writeFile(directory.filePath("Editor.app/Contents/Resources/AppIcon.icns"), "icns"));
+    ASSERT_TRUE(writeFile(directory.filePath("Catalog.app/Contents/Info.plist"), plist));
+
+    FolderModel folder;
+    folder.setSortMode(fm::Preferences::Name);
+    folder.setSortDesc(false);
+    folder.setUrl(directory.path());
+    ASSERT_TRUE(runUntil(loop(), [&] { return ready(folder) && folder.count() == 2; }));
+    ASSERT_TRUE(folder.item(0)->isBundle && folder.item(1)->isBundle);
+    EXPECT_EQ(folder.item(0)->iconName, fm::kBundleIconFallback);
+    EXPECT_EQ(folder.showsThumbnail(0), fm::thumbnails::canThumbnail("application/x-apple-app"));
+    EXPECT_FALSE(folder.showsThumbnail(1));
+}
+
+// A disk image's folder puts each icon's centre where its layout says, under
+// the bars, and the icons it does not place below them.
+TEST(FolderModelTest, AnArrangedGridPlacesIconsByTheirCentres)
+{
+    TemporaryDir directory;
+    ASSERT_TRUE(directory.isValid());
+    for (const char* name : {"Applications", "Editor", "Read Me"})
+        ASSERT_TRUE(writeFile(directory.filePath(name)));
+
+    FolderModel folder;
+    folder.setSortMode(fm::Preferences::Name);
+    folder.setSortDesc(false);
+    folder.setUrl(directory.path());
+    ASSERT_TRUE(runUntil(loop(), [&] { return ready(folder) && folder.count() == 3; }));
+
+    ui::Window window;
+    auto content = std::make_unique<fm::FolderGridView>(folder);
+    fm::FolderGridView& view = *content;
+    window.setContentView(std::move(content));
+    window.resize({640, 480});
+    window.show();
+    view.setTopInset(40);
+    auto arranged = std::make_shared<fm::ArrangedFolder>();
+    arranged->layout.iconSize = 128;
+    arranged->layout.positions = {{"Editor", {160, 190}}, {"Applications", {480, 190}}};
+    view.setArrangement(arranged);
+    EXPECT_EQ(view.iconSize(), 128);
+
+    const auto centre = [&](int index) {
+        const ui::RectF cell = view.cellRect(index);
+        return ui::PointF {cell.x + cell.width / 2, cell.y + 6 + 64};
+    };
+    // Sorted by name: Applications, Editor, Read Me.
+    window.grab();
+    EXPECT_EQ(centre(0).x, 480);
+    EXPECT_EQ(centre(0).y, 40 + 190);
+    EXPECT_EQ(centre(1).x, 160);
+    EXPECT_GE(view.cellRect(2).y, view.cellRect(0).bottom());
+
+    // The names at the stored text size: two lines of it under the icons.
+    auto larger = std::make_shared<fm::ArrangedFolder>(*arranged);
+    larger->layout.textSize = 16;
+    view.setArrangement(larger);
+    window.grab();
+    EXPECT_DOUBLE_EQ(view.cellHeight(), 128 + fm::style::fontHeight(16) * 2 + 24);
+    EXPECT_EQ(centre(1).x, 160);
+
+    // Beside the icons: the icon's centre where the layout says, the name
+    // after it, two lines high at most.
+    auto beside = std::make_shared<fm::ArrangedFolder>(*larger);
+    beside->layout.labelOnBottom = false;
+    view.setArrangement(beside);
+    window.grab();
+    EXPECT_EQ(view.cellRect(1).x + 12 + 64, 160);
+    EXPECT_EQ(view.cellRect(1).width, 128 + 24 + 104);
+    EXPECT_DOUBLE_EQ(view.cellHeight(), std::max(128.0, fm::style::fontHeight(16) * 2) + 12);
+
+    // Back to the grid: the preference's size again.
+    view.setArrangement(nullptr);
+    EXPECT_EQ(view.iconSize(), fm::Preferences::instance().gridIconSize());
+    window.grab();
+    EXPECT_EQ(view.cellRect(0).y, view.topMargin());
 }
 
 // The desktop and every folder window show hidden files or none together.

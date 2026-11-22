@@ -405,6 +405,10 @@ bool FolderModel::showsThumbnail(int row) const
     // Thumbnails of a phone's or a server's files would read each one whole.
     if (!file || !file->isLocalFile() || file->isDir || thumbnails::isOnMount(file->path))
         return false;
+    // A bundle that names an icon file shows that; only one whose icon is
+    // elsewhere needs its thumbnailer.
+    if (file->isBundle && file->iconName != kBundleIconFallback)
+        return false;
     return thumbnails::canThumbnail(file->mimeType);
 }
 
@@ -531,12 +535,24 @@ bool FolderModel::canGoBack() const
     return !m_searchText.empty() || m_history.canGoBack();
 }
 
+void FolderModel::setOpensFoldersInWindows(bool inWindows)
+{
+    if (inWindows == m_foldersInWindows)
+        return;
+    m_foldersInWindows = inWindows;
+    updateActions();
+}
+
 void FolderModel::up()
 {
     const std::string child = resolvedUrl();
     const std::string parent = upUrl(child);
     if (parent.empty())
         return;
+    if (opensFoldersInWindows()) {
+        openInNewWindow(parent);
+        return;
+    }
     setUrl(parent);
     selectWhenListed({child});
 }
@@ -1156,7 +1172,7 @@ void FolderModel::openSelected()
         return;
 
     const auto rows = selectedRows();
-    if (!m_isDesktop && rows.size() == 1 && item(rows.front())->isDir) {
+    if (!opensFoldersInWindows() && rows.size() == 1 && item(rows.front())->isDir) {
         setUrl(item(rows.front())->url);
         return;
     }
@@ -1168,7 +1184,7 @@ void FolderModel::openSelected()
 
     for (const int row : rows) {
         const FileItemPtr file = item(row);
-        if (m_isDesktop && file->isDir) {
+        if (opensFoldersInWindows() && file->isDir) {
             openInNewWindow(file->url);
             continue;
         }
@@ -1222,7 +1238,7 @@ void FolderModel::openBundle(const FileItem& file)
             return;
         }
         // Without a program that runs bundles one is a folder like any other.
-        if (m_isDesktop)
+        if (opensFoldersInWindows())
             openInNewWindow(file.url);
         else
             setUrl(file.url);
@@ -1236,8 +1252,15 @@ void FolderModel::mountDiskImage(const std::string& path)
 {
     MountsClient::instance().requestMount(
             path, {}, [this, alive = m_alive](const std::string& status, const base::dbus::VariantMap& details) {
-                if (!*alive || status == "mounted")
+                if (!*alive)
                     return;
+                // As on the platform, the volume opens in a window of its own.
+                if (status == "mounted") {
+                    const auto mounted = details.find("path");
+                    if (m_host && mounted != details.end() && !mounted->second.value<std::string>().empty())
+                        m_host->openDiskImageWindow(mounted->second.value<std::string>());
+                    return;
+                }
                 const auto found = details.find("message");
                 notification.emit(found != details.end() ? found->second.value<std::string>() : std::string());
             });
@@ -1804,7 +1827,7 @@ void FolderModel::updateActions()
     // Plain text instead of a check mark: the label says what the item does.
     m_actions["showHidden"].text = m_showHiddenFiles ? tr("Hide Hidden Files") : tr("Show Hidden Files");
     set("openInNewWindow", hasDir && !trash, true);
-    set("openInNewTab", hasDir && !trash && !m_isDesktop, true);
+    set("openInNewTab", hasDir && !trash && !opensFoldersInWindows(), true);
     set("undo", true, OperationsClient::instance().undoAvailable());
     set("redo", true, OperationsClient::instance().redoAvailable());
 
